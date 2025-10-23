@@ -1,0 +1,4 @@
+venv/
+ffmpeg-master-latest-win64-gpl/
+ffmpeg-8.0-essentials_build/
+.env
