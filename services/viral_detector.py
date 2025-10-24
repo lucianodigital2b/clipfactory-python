@@ -13,29 +13,39 @@ def extract_viral_moments(transcript_segments, model="gpt-4o-mini", max_tokens=1
         transcript_text += f"[{seg['start']:.2f}-{seg['end']:.2f}] {seg['text']}\n"
 
     prompt = f"""
-You are an AI content analyst. Extract the most viral, engaging, or emotional moments from the transcript below.
+            You are an AI content analyst. Extract the most viral, engaging, or emotional moments from the transcript below and generate compelling titles for each moment.
 
-Rules:
-- Each moment must include: start_time, end_time, transcript_text, and a short reason.
-- Max 60 seconds per moment.
-- Avoid intros or outros.
-- Return ONLY valid JSON.
+            Rules:
+            - Each moment must include: start_time, end_time, transcript_text, title, virality_score, and a short reason.
+            - Max 60 seconds per moment.
+            - Avoid intros or outros.
+            - Generate catchy, viral-worthy titles that would perform well on social media.
+            - Titles should be attention-grabbing, emotional, or curiosity-inducing but HUMAN LIKE. Dont' be generic!
+            - Assign a virality_score (0.0 to 1.0) based on viral potential:
+              * 0.9-1.0: Extremely viral (shocking reveals, dramatic moments, strong emotions)
+              * 0.7-0.8: High viral potential (funny, surprising, relatable content)
+              * 0.5-0.6: Moderate viral potential (interesting but not exceptional)
+              * 0.3-0.4: Low viral potential (informative but not engaging)
+              * 0.0-0.2: Minimal viral potential (boring, repetitive content)
+            - Return ONLY valid JSON.
 
-Example:
-[
-  {{
-    "start_time": 12.5,
-    "end_time": 45.0,
-    "transcript_text": "This was the moment everything changed...",
-    "reason": "Emotional reveal"
-  }}
-]
+            Example:
+            [
+            {{
+                "start_time": 12.5,
+                "end_time": 45.0,
+                "transcript_text": "This was the moment everything changed...",
+                "title": "The Life-Changing Moment That Shocked Everyone! 😱",
+                "virality_score": 0.85,
+                "reason": "Emotional reveal with strong hook"
+            }}
+            ]
 
-Transcript:
-\"\"\"
-{transcript_text}
-\"\"\"
-"""
+            Transcript:
+            \"\"\"
+            {transcript_text}
+            \"\"\"
+            """
 
     try:
         response = client.chat.completions.create(
@@ -56,7 +66,12 @@ Transcript:
         elif result.startswith("```"):
             result = result.replace("```", "").strip()
             
-        return json.loads(result)
+        parsed_result = json.loads(result)
+        print(f"🔍 DEBUG: Parsed {len(parsed_result)} viral moments from OpenAI", flush=True)
+        for i, moment in enumerate(parsed_result):
+            print(f"  Moment {i+1}: {moment.get('start_time', 'N/A')}s-{moment.get('end_time', 'N/A')}s - '{moment.get('title', 'No title')}'", flush=True)
+        
+        return parsed_result
     except json.JSONDecodeError as e:
         print(f"⚠️ JSON parsing failed: {e}")
         print(f"🔍 Raw response: {result}")

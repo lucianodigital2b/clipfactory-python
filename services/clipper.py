@@ -16,7 +16,7 @@ FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
 
 logger = logging.getLogger(__name__)
 
-def generate_clips(video_path, clip_duration, transcript, output_dir, cache_file=None, platform=None, source_id=None):
+def generate_clips(video_path, clip_duration, transcript, output_dir, cache_file=None, platform=None, source_id=None, aspect_ratio="16:9"):
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
     
@@ -36,7 +36,10 @@ def generate_clips(video_path, clip_duration, transcript, output_dir, cache_file
         return []
     
     num_clips = int(total_duration // duration) + (1 if total_duration % duration > 0 else 0)
-    print(f"🔍 DEBUG: Calculated number of clips: {num_clips}", flush=True)
+    
+    # DEBUG: Limit to 1 clip for debugging purposes
+    num_clips = min(num_clips, 1)
+    print(f"🔍 DEBUG: Calculated number of clips: {num_clips} (limited to 1 for debugging)", flush=True)
 
     logger.info(f"🎬 Clip generation started - Video: {video_path}, Duration: {total_duration}s, Clip length: {duration}s, Expected clips: {num_clips}")
     logger.info(f"📝 Transcript has {len(transcript)} segments")
@@ -94,12 +97,42 @@ def generate_clips(video_path, clip_duration, transcript, output_dir, cache_file
         transcript_text = " ".join([t["text"] for t in clip_segments])
         logger.info(f"📝 Clip {i+1} has {len(clip_segments)} transcript segments")
 
-        # Extract video
-        logger.info(f"🎬 Extracting video clip {i+1} using FFmpeg")
-        result = subprocess.run([
+        # Extract video with aspect ratio conversion
+        logger.info(f"🎬 Extracting video clip {i+1} using FFmpeg with aspect ratio {aspect_ratio}")
+        
+        # Build ffmpeg command with aspect ratio conversion
+        ffmpeg_cmd = [
             FFMPEG_PATH, "-ss", str(start_time), "-t", str(actual_duration),
-            "-i", video_path, "-c", "copy", clip_path, "-y"
-        ], capture_output=True, text=True)
+            "-i", video_path
+        ]
+        
+        # Add aspect ratio conversion filters
+        if aspect_ratio != "16:9":  # Only add filters if not default
+            # Convert aspect ratio string to decimal for calculations
+            if aspect_ratio == "9:16":
+                # Portrait mode - crop and scale for vertical video
+                ffmpeg_cmd.extend(["-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"])
+            elif aspect_ratio == "4:3":
+                # 4:3 aspect ratio
+                ffmpeg_cmd.extend(["-vf", "scale=1440:1080:force_original_aspect_ratio=increase,crop=1440:1080"])
+            elif aspect_ratio == "1:1":
+                # Square aspect ratio
+                ffmpeg_cmd.extend(["-vf", "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"])
+            else:
+                # For other ratios, try to parse and apply generic scaling
+                try:
+                    w_ratio, h_ratio = map(int, aspect_ratio.split(':'))
+                    # Use 1080p as base height and calculate width
+                    target_height = 1080
+                    target_width = int((target_height * w_ratio) / h_ratio)
+                    ffmpeg_cmd.extend(["-vf", f"scale={target_width}:{target_height}:force_original_aspect_ratio=increase,crop={target_width}:{target_height}"])
+                except:
+                    logger.warning(f"⚠️ Invalid aspect ratio format: {aspect_ratio}, using original")
+        
+        # Add output parameters
+        ffmpeg_cmd.extend(["-c:a", "copy", clip_path, "-y"])
+        
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
             logger.error(f"❌ FFmpeg failed for clip {i+1}: {result.stderr}")
@@ -123,6 +156,7 @@ def generate_clips(video_path, clip_duration, transcript, output_dir, cache_file
             "end_time": end_time,
             "platform": platform,
             "source_id": source_id,
+            "title": None,  # Will be populated by viral detector
         }
 
         with cache_lock:

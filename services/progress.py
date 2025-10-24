@@ -45,9 +45,6 @@ class ProgressReporter:
             response = requests.post(self.webhook_url, json=payload, timeout=5, verify=False)
             
             print(f"Response Status: {response.status_code}", flush=True)
-            print(f"Response Headers: {dict(response.headers)}", flush=True)
-            # Skip response body to avoid encoding issues
-            print("Response received (body skipped to avoid encoding issues)", flush=True)
             
             if response.status_code == 200:
                 print(f"Progress update sent successfully: {percent}% - {message}")

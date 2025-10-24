@@ -6,9 +6,10 @@ from datetime import datetime
 from services.downloader import download_video
 from services.transcriber import transcribe_video
 from services.clipper import generate_clips
+from services.frame_focus import focus_on_speaker
 from services.uploader import upload_to_r2
 from services.progress import ProgressReporter
-from services.title_generator import generate_titles_batch
+
 from services.viral_detector import extract_viral_moments
 from services.job_manager import job_manager, JobStatus
 
@@ -59,6 +60,8 @@ def process_video_async(job_id: str, job_data: dict):
         platform = job_data.get("platform", "YouTube")
         style = job_data.get("style", "default")
         transcription_method = job_data.get("transcription_method", "faster-whisper")
+        aspect_ratio = job_data.get("aspect_ratio", "9:16")  # Default to 16:9
+        transcription = job_data.get("transcription")  # Pre-existing transcription from R2
 
         print(f"🔄 Processing job {job_id} with URL: {video_url}", flush=True)
         
@@ -77,11 +80,19 @@ def process_video_async(job_id: str, job_data: dict):
             print(f"📥 Downloading video for job {job_id}", flush=True)
             local_path = download_video(video_url, tmpdir)
             
-            # Step 2: Transcribe video
-            progress.update(30, f"Transcribing video ({transcription_method})...")
-            print(f"🎤 Transcribing video for job {job_id}", flush=True)
-            transcript = transcribe_video(local_path, method=transcription_method)
-            print(f"📝 Transcript generated with {len(transcript)} segments for job {job_id}", flush=True)
+            # Step 2: Handle transcription
+            if transcription:
+                # Use pre-existing transcription from R2
+                progress.update(30, "Using provided transcription...")
+                print(f"📝 Using pre-existing transcription for job {job_id}", flush=True)
+                transcript = transcription
+                print(f"📝 Loaded transcript with {len(transcript)} segments for job {job_id}", flush=True)
+            else:
+                # Transcribe video using specified method
+                progress.update(30, f"Transcribing video ({transcription_method})...")
+                print(f"🎤 Transcribing video for job {job_id}", flush=True)
+                transcript = transcribe_video(local_path, method=transcription_method, video_id=video_id, progress=progress)
+                print(f"📝 Transcript generated with {len(transcript)} segments for job {job_id}", flush=True)
             
             # Step 3: Generate clips
             progress.update(60, "Generating clips...")
@@ -105,6 +116,7 @@ def process_video_async(job_id: str, job_data: dict):
             print(f"  - output_dir: {video_output_dir}", flush=True)
             print(f"  - platform: {platform}", flush=True)
             print(f"  - source_id: {video_id}", flush=True)
+            print(f"  - aspect_ratio: {aspect_ratio}", flush=True)
             
             try:
                 clips = generate_clips(
@@ -113,10 +125,105 @@ def process_video_async(job_id: str, job_data: dict):
                     transcript=transcript, 
                     output_dir=video_output_dir,
                     platform=platform,
-                    source_id=video_id
+                    source_id=video_id,
+                    aspect_ratio=aspect_ratio
                 )
                 print(f"🎬 Generated {len(clips)} clips for job {job_id}", flush=True)
                 print(f"🔍 DEBUG: generate_clips returned: {clips}", flush=True)
+                
+                # Step 3.5: Apply smart camera focus to clips
+                progress.update(70, "Applying smart camera focus...")
+                print(f"🎯 Applying smart camera focus to clips for job {job_id}", flush=True)
+                
+                focused_clips = []
+                for i, clip in enumerate(clips):
+                    try:
+                        # Create focused version filename
+                        clip_filename = os.path.basename(clip["video"])
+                        focused_filename = f"focused_{clip_filename}"
+                        focused_path = os.path.join(video_output_dir, focused_filename)
+                        
+                        # Apply smart camera focus (before aspect ratio conversion)
+                        print(f"🎯 Processing clip {i+1}/{len(clips)}: {clip_filename}", flush=True)
+                        
+                        # Use the original video for focus detection, not the aspect-ratio converted clip
+                        focus_on_speaker(local_path, focused_path, fps_batch=5, 
+                                       start_time=clip["start_time"], 
+                                       duration=clip["end_time"] - clip["start_time"])
+                        
+                        # Delete original clip to save space (we only keep the focused version)
+                        try:
+                            os.remove(clip["video"])
+                            print(f"🗑️ Deleted original clip to save space: {clip['video']}", flush=True)
+                        except Exception as delete_error:
+                            print(f"⚠️ Warning: Could not delete original clip {clip['video']}: {delete_error}", flush=True)
+                        
+                        # Update clip path to focused version
+                        focused_clip = clip.copy()
+                        focused_clip["video"] = focused_path
+                        focused_clips.append(focused_clip)
+                        
+                        print(f"✅ Smart focus applied to clip {i+1}/{len(clips)}", flush=True)
+                        
+                    except Exception as focus_error:
+                        print(f"⚠️ Warning: Smart focus failed for clip {i+1}, using original: {focus_error}", flush=True)
+                        # Use original clip if focus fails
+                        focused_clips.append(clip)
+                
+                clips = focused_clips
+                print(f"🎯 Smart camera focus completed for {len(clips)} clips", flush=True)
+                
+                # Step 3.6: Extract viral moments and assign titles
+                progress.update(75, "Analyzing viral moments and generating titles...")
+                print(f"🔥 Extracting viral moments and generating titles for job {job_id}", flush=True)
+                
+                try:
+                    viral_moments = extract_viral_moments(transcript)
+                    print(f"🔥 Found {len(viral_moments)} viral moments", flush=True)
+                    
+                    # Assign titles from viral moments to clips based on time overlap
+                    for clip in clips:
+                        clip_start = clip["start_time"]
+                        clip_end = clip["end_time"]
+                        
+                        print(f"🔍 DEBUG: Processing clip {clip['index']}: {clip_start}s-{clip_end}s", flush=True)
+                        
+                        # Find the viral moment that best overlaps with this clip
+                        best_match = None
+                        best_overlap = 0
+                        
+                        for moment in viral_moments:
+                            moment_start = moment.get("start_time", 0)
+                            moment_end = moment.get("end_time", 0)
+                            
+                            # Calculate overlap between clip and viral moment
+                            overlap_start = max(clip_start, moment_start)
+                            overlap_end = min(clip_end, moment_end)
+                            overlap_duration = max(0, overlap_end - overlap_start)
+                            
+                            print(f"  🔍 Checking moment {moment_start}s-{moment_end}s: overlap = {overlap_duration}s", flush=True)
+                            
+                            if overlap_duration > best_overlap:
+                                best_overlap = overlap_duration
+                                best_match = moment
+                        
+                        # Assign title and virality score from best matching viral moment
+                        if best_match and best_overlap > 0.5:  # At least 0.5 seconds overlap
+                            clip["title"] = best_match.get("title", "Untitled")
+                            clip["virality_score"] = best_match.get("virality_score", 0.0)
+                            print(f"📝 Assigned title to clip {clip['index']}: '{clip['title']}' (virality: {clip['virality_score']}, overlap: {best_overlap}s)", flush=True)
+                        else:
+                            clip["title"] = "Untitled"
+                            clip["virality_score"] = 0.0
+                            print(f"📝 No viral moment match for clip {clip['index']} (best overlap: {best_overlap}s), using default title and virality score", flush=True)
+                            
+                except Exception as viral_error:
+                    print(f"⚠️ Warning: Viral moment extraction failed: {viral_error}", flush=True)
+                    # Fallback: assign default titles and virality scores
+                    for clip in clips:
+                        clip["title"] = "Untitled"
+                        clip["virality_score"] = 0.0
+                
             except Exception as e:
                 print(f"❌ ERROR: Exception in generate_clips: {type(e).__name__}: {str(e)}", flush=True)
                 import traceback
@@ -143,19 +250,16 @@ def process_video_async(job_id: str, job_data: dict):
                     "subtitles": srt_url             # Keep for backward compatibility
                 })
             
-            # Step 5: Generate titles
-            progress.update(90, "Generating titles...")
-            print(f"📝 Generating titles for job {job_id}", flush=True)
-            clips_data = [{"index": c["index"], "transcript": c["transcript"]} for c in uploaded_clips]
-            titles = generate_titles_batch(clips_data, platform, style)
+            # Step 5: Complete processing
+            progress.update(90, "Finalizing clips...")
+            print(f"✅ Processing complete for job {job_id}", flush=True)
             
-            # Assign titles to clips
+            # Clips already have titles and virality scores from viral detector
             for c in uploaded_clips:
-                match = next((t for t in titles if t["index"] == c["index"]), None)
-                c["title"] = match["title"] if match else "Untitled"
-                # Add optional Laravel fields with default values
+                # Ensure title and virality score are included in the uploaded clip data
+                c["title"] = next((clip["title"] for clip in clips if clip["index"] == c["index"]), "Untitled")
+                c["virality_score"] = next((clip["virality_score"] for clip in clips if clip["index"] == c["index"]), 0.0)
                 c["description"] = None  # nullable string
-                c["virality_score"] = None  # nullable numeric between 0,1
                 c["thumbnail_path"] = None  # nullable string
             
             progress.update(100, "Processing complete!", clips=uploaded_clips, total_clips=len(uploaded_clips))
