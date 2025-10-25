@@ -37,9 +37,9 @@ def generate_clips(video_path, clip_duration, transcript, output_dir, cache_file
     
     num_clips = int(total_duration // duration) + (1 if total_duration % duration > 0 else 0)
     
-    # DEBUG: Limit to 1 clip for debugging purposes
-    num_clips = min(num_clips, 1)
-    print(f"🔍 DEBUG: Calculated number of clips: {num_clips} (limited to 1 for debugging)", flush=True)
+    # Limit to 3 clips
+    num_clips = min(num_clips, 3)
+    print(f"🔍 DEBUG: Calculated number of clips: {num_clips} (limited to 3)", flush=True)
 
     logger.info(f"🎬 Clip generation started - Video: {video_path}, Duration: {total_duration}s, Clip length: {duration}s, Expected clips: {num_clips}")
     logger.info(f"📝 Transcript has {len(transcript)} segments")

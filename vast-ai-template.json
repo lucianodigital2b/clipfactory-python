@@ -1,0 +1,79 @@
+{
+  "name": "ClipFactory Python - AI Video Processing",
+  "description": "Advanced AI-powered video processing service with speaker detection, audio-visual analysis, and intelligent clip generation. Optimized for GPU acceleration with CUDA support.",
+  "image": "nvidia/cuda:12.1-devel-ubuntu22.04",
+  "docker_options": "-p 8000:8000 -e FLASK_ENV=production -e FLASK_DEBUG=false -e CUDA_VISIBLE_DEVICES=0 -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility -e CLIPPER_MAX_WORKERS=4 -e FFMPEG_PATH=ffmpeg --shm-size=2g",
+  "ports": [
+    {
+      "internal": 8000,
+      "external": 8000,
+      "protocol": "tcp",
+      "description": "ClipFactory API Server"
+    }
+  ],
+  "environment_variables": [
+    {
+      "name": "R2_ENDPOINT_URL",
+      "value": "",
+      "description": "Cloudflare R2 endpoint URL for storage"
+    },
+    {
+      "name": "R2_ACCESS_KEY_ID", 
+      "value": "",
+      "description": "R2 access key ID"
+    },
+    {
+      "name": "R2_SECRET_ACCESS_KEY",
+      "value": "",
+      "description": "R2 secret access key"
+    },
+    {
+      "name": "R2_BUCKET_NAME",
+      "value": "",
+      "description": "R2 bucket name for file storage"
+    },
+    {
+      "name": "OPENAI_API_KEY",
+      "value": "",
+      "description": "OpenAI API key for transcription services"
+    },
+    {
+      "name": "GROQ_API_KEY",
+      "value": "",
+      "description": "Groq API key for fast transcription"
+    },
+    {
+      "name": "FLASK_ENV",
+      "value": "production",
+      "description": "Flask environment mode"
+    },
+    {
+      "name": "FLASK_DEBUG",
+      "value": "false",
+      "description": "Flask debug mode"
+    },
+    {
+      "name": "CLIPPER_MAX_WORKERS",
+      "value": "4",
+      "description": "Maximum worker threads for video processing"
+    },
+    {
+      "name": "CUDA_VISIBLE_DEVICES",
+      "value": "0",
+      "description": "GPU device selection"
+    }
+  ],
+  "on_start_script": "#!/bin/bash\n\n# ClipFactory Python Setup Script\necho '🚀 Starting ClipFactory Python setup...'\n\n# Update system\napt-get update\napt-get install -y git curl wget python3 python3-pip ffmpeg\n\n# Clone repository\ncd /workspace\nif [ ! -d 'clipfactory-python' ]; then\n    git clone https://github.com/yourusername/clipfactory-python.git\nfi\ncd clipfactory-python\n\n# Install Python dependencies\npip3 install -r requirements.txt\n\n# Install PyTorch with CUDA support\npip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121\n\n# Install additional ML packages\npip3 install ultralytics mediapipe-silicon librosa soundfile\n\n# Create necessary directories\nmkdir -p temp uploads downloads\n\n# Download YOLO model\npython3 -c \"from ultralytics import YOLO; YOLO('yolov8n.pt')\"\n\n# Set environment variables in system\necho 'export FLASK_ENV=production' >> /etc/environment\necho 'export FLASK_DEBUG=false' >> /etc/environment\necho 'export CUDA_VISIBLE_DEVICES=0' >> /etc/environment\necho 'export CLIPPER_MAX_WORKERS=4' >> /etc/environment\n\n# Start the application\necho '🎬 Starting ClipFactory service...'\ncd /workspace/clipfactory-python\npython3 app.py &\n\n# Wait and check health\nsleep 30\nif curl -f http://localhost:8000/status/health > /dev/null 2>&1; then\n    echo '✅ ClipFactory is running successfully!'\n    echo '🌐 Service available at: http://localhost:8000'\nelse\n    echo '❌ Service failed to start. Check logs.'\nfi\n\necho '🎉 Setup complete!'",
+  "launch_mode": "normal",
+  "gpu_required": true,
+  "min_gpu_memory": 8,
+  "recommended_gpu_memory": 16,
+  "min_ram": 16,
+  "recommended_ram": 32,
+  "min_disk": 50,
+  "recommended_disk": 100,
+  "cuda_version": "12.1",
+  "tags": ["ai", "video-processing", "machine-learning", "cuda", "pytorch", "flask", "api"],
+  "category": "AI/ML",
+  "readme": "# ClipFactory Python - AI Video Processing\n\n## Overview\nAdvanced AI-powered video processing service that combines audio-visual analysis with intelligent speaker detection to generate engaging video clips.\n\n## Features\n- 🎯 **Smart Speaker Detection**: Advanced audio-visual analysis to identify and focus on active speakers\n- 🎬 **Intelligent Cropping**: Automatic video cropping with speaker tracking\n- 🎵 **Multi-Modal Analysis**: Combines audio energy, lip movement, and visual cues\n- ⚡ **GPU Accelerated**: Optimized for CUDA-enabled GPUs\n- 🔄 **Batch Processing**: Efficient processing of multiple video clips\n- 📊 **Real-time Progress**: WebSocket-based progress tracking\n\n## API Endpoints\n- `POST /process` - Start video processing job\n- `GET /status/<job_id>` - Check job status and progress\n- `GET /status/health` - Health check endpoint\n\n## Required Environment Variables\n- `R2_ENDPOINT_URL` - Cloudflare R2 storage endpoint\n- `R2_ACCESS_KEY_ID` - R2 access key\n- `R2_SECRET_ACCESS_KEY` - R2 secret key\n- `R2_BUCKET_NAME` - R2 bucket name\n- `OPENAI_API_KEY` - OpenAI API key (optional)\n- `GROQ_API_KEY` - Groq API key (optional)\n\n## GPU Requirements\n- **Minimum**: 8GB VRAM\n- **Recommended**: 16GB+ VRAM\n- **CUDA**: 12.1 or compatible\n\n## Usage\n1. Set required environment variables\n2. Send POST request to `/process` with video URL\n3. Monitor progress via `/status/<job_id>`\n4. Download processed clips from provided URLs\n\n## Support\nFor issues or questions, please check the repository documentation."
+}

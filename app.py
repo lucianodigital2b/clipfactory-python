@@ -63,42 +63,31 @@ def process_video():
 
 @app.route("/status/<job_id>", methods=["GET"])
 def get_job_status(job_id):
-    """Get the status and progress of a video processing job"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] 📊 Status check for job: {job_id}")
-    
+    """Get the status of a processing job"""
     job = job_manager.get_job(job_id)
     
     if not job:
-        print(f"[{timestamp}] ❌ Job {job_id} not found")
         return jsonify({"error": "Job not found"}), 404
     
-    response = {
+    return jsonify({
         "job_id": job_id,
-        "status": job["status"],
-        "created_at": job["created_at"],
-        "updated_at": job.get("updated_at", job["created_at"])
-    }
-    
-    # Add progress information if available
-    if job.get("progress") is not None:
-        response["progress"] = job["progress"]
-    
-    if job.get("message"):
-        response["message"] = job["message"]
-    
-    # Add result if job is completed
-    if job["status"] == "completed" and job.get("result"):
-        response["result"] = job["result"]
-    
-    # Add error if job failed
-    if job["status"] == "failed" and job.get("error"):
-        response["error"] = job["error"]
-    
-    print(f"[{timestamp}] 📤 API Response for job {job_id}:", flush=True)
-    print(f"[{timestamp}] 📋 Response: {json.dumps(response, indent=2)}", flush=True)
-    
-    return jsonify(response)
+        "status": job["status"].value,
+        "progress": job.get("progress", 0),
+        "message": job.get("message", ""),
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at")
+    })
+
+@app.route("/status/health", methods=["GET"])
+def health_check():
+    """Health check endpoint for Docker"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "clipfactory-python"
+    })
 
 
 if __name__ == "__main__":

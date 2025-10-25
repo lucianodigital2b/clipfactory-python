@@ -2,6 +2,7 @@ import os
 import threading
 import tempfile
 import time
+import re
 from datetime import datetime
 from services.downloader import download_video
 from services.transcriber import transcribe_video
@@ -12,6 +13,59 @@ from services.progress import ProgressReporter
 
 from services.viral_detector import extract_viral_moments
 from services.job_manager import job_manager, JobStatus
+
+def generate_title_from_transcript(transcript_text):
+    """Generate a meaningful title from transcript text"""
+    if not transcript_text or not transcript_text.strip():
+        return "Untitled Clip"
+    
+    # Clean up the transcript text
+    text = transcript_text.strip()
+    
+    # Remove common filler words and clean up
+    text = re.sub(r'\b(um|uh|like|you know|so|well|actually|basically)\b', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Remove leading commas and spaces that might be left after filler word removal
+    text = re.sub(r'^[,\s]+', '', text)
+    text = re.sub(r'[,\s]+$', '', text)
+    
+    # Split into sentences and find the most meaningful one
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+    
+    if not sentences:
+        # If no good sentences, use first few words
+        words = text.split()[:6]
+        if words:
+            title = ' '.join(words)
+            if not title.endswith(('!', '?', '.')):
+                title += '...'
+            return title.capitalize()
+        return "Untitled Clip"
+    
+    # Use the first meaningful sentence
+    title = sentences[0].strip()
+    
+    # Capitalize first letter
+    if title:
+        title = title[0].upper() + title[1:] if len(title) > 1 else title.upper()
+    
+    # Ensure it's not too long (max 60 characters for social media)
+    if len(title) > 60:
+        title = title[:57] + "..."
+    
+    # Add punctuation if missing
+    if title and not title.endswith(('!', '?', '.')):
+        # Add appropriate punctuation based on content
+        if any(word in title.lower() for word in ['what', 'how', 'why', 'when', 'where', 'who']):
+            title += '?'
+        elif any(word in title.lower() for word in ['amazing', 'incredible', 'wow', 'shocking', 'unbelievable']):
+            title += '!'
+        else:
+            title += '.'
+    
+    return title
 
 def log_step(step_name, start_time=None, end_time=None):
     """Logging utility function"""
@@ -61,7 +115,7 @@ def process_video_async(job_id: str, job_data: dict):
         style = job_data.get("style", "default")
         transcription_method = job_data.get("transcription_method", "faster-whisper")
         aspect_ratio = job_data.get("aspect_ratio", "9:16")  # Default to 16:9
-        transcription = job_data.get("transcription")  # Pre-existing transcription from R2
+        transcription = job_data.get("subtitles_path")  # Pre-existing transcription from R2
 
         print(f"🔄 Processing job {job_id} with URL: {video_url}", flush=True)
         
@@ -213,16 +267,34 @@ def process_video_async(job_id: str, job_data: dict):
                             clip["virality_score"] = best_match.get("virality_score", 0.0)
                             print(f"📝 Assigned title to clip {clip['index']}: '{clip['title']}' (virality: {clip['virality_score']}, overlap: {best_overlap}s)", flush=True)
                         else:
-                            clip["title"] = "Untitled"
-                            clip["virality_score"] = 0.0
-                            print(f"📝 No viral moment match for clip {clip['index']} (best overlap: {best_overlap}s), using default title and virality score", flush=True)
+                            # Fallback: Generate title from clip's transcript content
+                            clip_transcript = clip.get("transcript_text", "").strip()
+                            if clip_transcript:
+                                # Create a meaningful title from the transcript
+                                title = generate_title_from_transcript(clip_transcript)
+                                clip["title"] = title
+                                clip["virality_score"] = 0.3  # Default moderate score for transcript-based titles
+                                print(f"📝 Generated title from transcript for clip {clip['index']}: '{clip['title']}' (virality: {clip['virality_score']})", flush=True)
+                            else:
+                                # Last resort: Use clip index
+                                clip["title"] = f"Clip {clip['index']}"
+                                clip["virality_score"] = 0.1
+                                print(f"📝 Using fallback title for clip {clip['index']}: '{clip['title']}' (virality: {clip['virality_score']})", flush=True)
                             
                 except Exception as viral_error:
                     print(f"⚠️ Warning: Viral moment extraction failed: {viral_error}", flush=True)
-                    # Fallback: assign default titles and virality scores
+                    # Fallback: Generate titles from transcript content for all clips
                     for clip in clips:
-                        clip["title"] = "Untitled"
-                        clip["virality_score"] = 0.0
+                        clip_transcript = clip.get("transcript_text", "").strip()
+                        if clip_transcript:
+                            title = generate_title_from_transcript(clip_transcript)
+                            clip["title"] = title
+                            clip["virality_score"] = 0.3
+                            print(f"📝 Generated fallback title from transcript for clip {clip['index']}: '{clip['title']}'", flush=True)
+                        else:
+                            clip["title"] = f"Clip {clip['index']}"
+                            clip["virality_score"] = 0.1
+                            print(f"📝 Using index-based title for clip {clip['index']}: '{clip['title']}'", flush=True)
                 
             except Exception as e:
                 print(f"❌ ERROR: Exception in generate_clips: {type(e).__name__}: {str(e)}", flush=True)
