@@ -27,8 +27,11 @@ def process_video():
     platform = data.get("platform", "YouTube")
     style = data.get("style", "default")
     transcription_method = data.get("transcription_method", "faster-whisper")
+    aspect_ratio = data.get("aspect_ratio", "9:16")
+    enable_face_focus = data.get("enable_face_focus", True)
+    resolution = data.get("resolution", "360p")
 
-    print(f"[{timestamp}] 📝 Request Parameters - URL: {video_url}, Duration: {clip_duration}s, Platform: {platform}, Style: {style}, Transcription: {transcription_method}, Webhook: {webhook_url}")
+    print(f"[{timestamp}] 📝 Request Parameters - URL: {video_url}, Duration: {clip_duration}s, Platform: {platform}, Style: {style}, Transcription: {transcription_method}, Aspect Ratio: {aspect_ratio}, Face Focus: {enable_face_focus}, Resolution: {resolution}, Webhook: {webhook_url}")
 
     # Validation
     if not video_url:
@@ -45,7 +48,10 @@ def process_video():
         "webhook_url": webhook_url,
         "platform": platform,
         "style": style,
-        "transcription_method": transcription_method
+        "transcription_method": transcription_method,
+        "aspect_ratio": aspect_ratio,
+        "enable_face_focus": enable_face_focus,
+        "resolution": resolution
     }
     
     job_id = start_video_processing(job_data)

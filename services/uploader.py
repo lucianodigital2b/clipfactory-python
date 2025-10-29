@@ -8,16 +8,30 @@ def upload_to_r2(file_path, video_id=None):
         file_size = os.path.getsize(file_path)
         print(f"📏 File size: {file_size} bytes ({file_size / (1024*1024):.2f} MB)")
         
+        # Check for required environment variables
+        required_vars = {
+            'R2_ENDPOINT': os.getenv("R2_ENDPOINT"),
+            'R2_ACCESS_KEY': os.getenv("R2_ACCESS_KEY"),
+            'R2_SECRET_KEY': os.getenv("R2_SECRET_KEY"),
+            'R2_BUCKET': os.getenv("R2_BUCKET")
+        }
+        
+        missing_vars = [var for var, value in required_vars.items() if not value]
+        if missing_vars:
+            error_msg = f"Missing required R2 environment variables: {', '.join(missing_vars)}"
+            print(f"❌ {error_msg}")
+            raise Exception(error_msg)
+        
         session = boto3.session.Session()
         s3 = session.client(
             service_name='s3',
-            endpoint_url=os.getenv("R2_ENDPOINT"),
-            aws_access_key_id=os.getenv("R2_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("R2_SECRET_KEY"),
+            endpoint_url=required_vars['R2_ENDPOINT'],
+            aws_access_key_id=required_vars['R2_ACCESS_KEY'],
+            aws_secret_access_key=required_vars['R2_SECRET_KEY'],
             region_name='auto'
         )
 
-        bucket = os.getenv("R2_BUCKET")
+        bucket = required_vars['R2_BUCKET']
         filename = os.path.basename(file_path)
         
         # Organize files by video_id if provided

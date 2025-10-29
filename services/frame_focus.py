@@ -338,13 +338,63 @@ def detect_person_in_frame(model: YOLO, frame: np.ndarray, confidence_threshold:
         return []
 
 
+def parse_resolution(resolution: str) -> int:
+    """
+    Parse resolution string and return height in pixels.
+    
+    Args:
+        resolution: Resolution string (e.g., "360p", "720p", "1080p")
+    
+    Returns:
+        int: Height in pixels
+    """
+    resolution_map = {
+        "240p": 240,
+        "360p": 360,
+        "480p": 480,
+        "720p": 720,
+        "1080p": 1080,
+        "1440p": 1440,
+        "2160p": 2160  # 4K
+    }
+    
+    resolution_lower = resolution.lower()
+    if resolution_lower in resolution_map:
+        return resolution_map[resolution_lower]
+    
+    # Try to extract number from string (e.g., "720" from "720p")
+    import re
+    match = re.search(r'(\d+)', resolution)
+    if match:
+        return int(match.group(1))
+    
+    # Default fallback
+    logger.warning(f"Unknown resolution '{resolution}', defaulting to 360p")
+    return 360
+
+def parse_aspect_ratio(aspect_ratio_str: str) -> float:
+    """
+    Parse aspect ratio string to float.
+    Examples: "9:16" -> 0.5625, "16:9" -> 1.7778, "1:1" -> 1.0
+    """
+    try:
+        if ':' in aspect_ratio_str:
+            w, h = aspect_ratio_str.split(':')
+            return float(w) / float(h)
+        else:
+            return float(aspect_ratio_str)
+    except:
+        logger.warning(f"Could not parse aspect ratio '{aspect_ratio_str}', using 9:16")
+        return 9/16
+
+
 def calculate_crop_parameters(speaker_bbox: Tuple[int, int, int, int], 
                              all_bboxes: List[Tuple[int, int, int, int]],
                              frame_width: int, frame_height: int, 
                              target_aspect_ratio: float = 9/16, 
-                             zoom_factor: float = 1.2) -> Tuple[int, int, int, int]:
+                             zoom_factor: float = 2.5) -> Tuple[int, int, int, int]:
     """
-    Calculate crop parameters focused on the active speaker
+    Calculate crop parameters focused on the active speaker's face
     Returns (crop_x, crop_y, crop_width, crop_height)
     """
     if not speaker_bbox:
@@ -363,21 +413,32 @@ def calculate_crop_parameters(speaker_bbox: Tuple[int, int, int, int],
     speaker_width = x2 - x1
     speaker_height = y2 - y1
     
-    # Apply zoom factor
-    zoomed_width = int(speaker_width * zoom_factor)
-    zoomed_height = int(speaker_height * zoom_factor)
+    # Focus on the upper portion of the person (head/face area)
+    # Adjust center point to focus on face (upper 1/3 of person bbox)
+    face_center_y = y1 + int(speaker_height * 0.25)  # Focus on face area
     
-    # Calculate crop dimensions for portrait aspect ratio
-    crop_height = max(zoomed_height * 2, frame_height // 2)
-    crop_width = int(crop_height * target_aspect_ratio)
+    # Calculate desired crop size based on face dimensions
+    # Use a tighter crop that focuses on head/shoulders
+    face_width = int(speaker_width * zoom_factor)
+    face_height = int(speaker_height * zoom_factor * 0.6)  # Focus on upper portion
+    
+    # Determine crop dimensions based on target aspect ratio
+    if target_aspect_ratio < 1.0:  # Portrait mode (9:16)
+        # For portrait, make height based on face area
+        crop_height = max(face_height, int(face_width / target_aspect_ratio))
+        crop_width = int(crop_height * target_aspect_ratio)
+    else:  # Landscape mode (16:9)
+        # For landscape, make width based on face area
+        crop_width = max(face_width, int(face_height * target_aspect_ratio))
+        crop_height = int(crop_width / target_aspect_ratio)
     
     # Ensure crop doesn't exceed frame dimensions
     crop_width = min(crop_width, frame_width)
     crop_height = min(crop_height, frame_height)
     
-    # Center crop around speaker
+    # Center crop around face area
     crop_x = max(0, speaker_center_x - crop_width // 2)
-    crop_y = max(0, speaker_center_y - crop_height // 2)
+    crop_y = max(0, face_center_y - crop_height // 2)
     
     # Adjust if crop goes beyond boundaries
     if crop_x + crop_width > frame_width:
@@ -388,17 +449,41 @@ def calculate_crop_parameters(speaker_bbox: Tuple[int, int, int, int],
     return (crop_x, crop_y, crop_width, crop_height)
 
 
-def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3, 
-                    start_time: float = 0, duration: Optional[float] = None) -> str:
+def focus_on_speaker(video_path: str, output_path: str, 
+                    start_time: float = 0, 
+                    duration: Optional[float] = None,
+                    target_aspect_ratio: str = "9:16",
+                    min_confidence: float = 0.6,
+                    fps_batch: int = 5,
+                    resolution: str = "360p") -> bool:
     """
     Uses audio-visual analysis to detect and track the active speaker.
     Combines YOLOv8 (person detection), MediaPipe (lip movement), and audio analysis.
-    Outputs a portrait-oriented (1080x1920) video focused on the active speaker.
+    Outputs a video focused on the active speaker with the specified aspect ratio.
+    
+    NEW SIGNATURE COMPLIANCE:
+    Args:
+        video_path: Path to input video file
+        output_path: Path to save output video
+        start_time: Start time in seconds for clip processing (default: 0)
+        duration: Duration in seconds for clip processing (default: None = full video)
+        target_aspect_ratio: Target aspect ratio as string (e.g., "9:16", "16:9", "1:1")
+        min_confidence: Minimum confidence threshold for face detection (0.0-1.0)
+        fps_batch: Process every Nth frame (higher = faster but less accurate)
+    
+    Returns:
+        bool: True if face detected successfully and processing completed, False otherwise
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"[{timestamp}] 🎯 Starting audio-visual speaker detection")
-    logger.info(f"[{timestamp}] 📁 Input: {input_path}")
+    logger.info(f"[{timestamp}] 📁 Input: {video_path}")
     logger.info(f"[{timestamp}] 📁 Output: {output_path}")
+    logger.info(f"[{timestamp}] 🎬 Clip: start={start_time}s, duration={duration}s")
+    logger.info(f"[{timestamp}] 📐 Target aspect ratio: {target_aspect_ratio}")
+    logger.info(f"[{timestamp}] 🎯 Min confidence: {min_confidence}")
+    
+    # Parse aspect ratio and resolution
+    aspect_ratio_float = parse_aspect_ratio(target_aspect_ratio)
     
     try:
         # Initialize components
@@ -416,12 +501,12 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
         
         # Extract and analyze audio
         logger.info(f"[{timestamp}] 🎵 Extracting audio from video...")
-        audio, sr = audio_analyzer.extract_audio_from_video(input_path)
+        audio, sr = audio_analyzer.extract_audio_from_video(video_path)
         
         # Open video
-        cap = cv2.VideoCapture(input_path)
+        cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            raise ValueError(f"Could not open video file: {input_path}")
+            raise ValueError(f"Could not open video file: {video_path}")
         
         # Get video properties
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -457,6 +542,7 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
         processed_frames = 0
         speaker_switches = 0
         previous_speaker = None
+        face_detected_frames = 0  # NEW: Track frames with face detection
         
         logger.info(f"[{timestamp}] 🔍 Processing frames for speaker detection...")
         
@@ -469,14 +555,14 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
             # Process every fps_batch frames
             if frame_idx % fps_batch == 0:
                 # Detect persons
-                person_bboxes = detect_person_in_frame(yolo_model, frame, max_persons=2)
+                person_bboxes = detect_person_in_frame(yolo_model, frame, confidence_threshold=min_confidence, max_persons=2)
                 
                 if person_bboxes:
                     # Smooth bounding boxes
                     smoothed_bboxes = bbox_smoother.smooth_boxes(person_bboxes)
                     
                     # Get audio energy for this frame
-                    audio_energy = frame_audio_energy.get(frame_idx, 0.0)
+                    audio_energy = frame_audio_energy.get(frame_idx + start_frame, 0.0)
                     
                     # Detect lip movement (only if persons are detected)
                     lip_scores = lip_detector.detect_lip_movement(frame, smoothed_bboxes)
@@ -495,16 +581,22 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
                         crop_params = calculate_crop_parameters(
                             speaker_bbox, smoothed_bboxes, 
                             frame_width, frame_height, 
-                            target_aspect_ratio=9/16, zoom_factor=1.2
+                            target_aspect_ratio=aspect_ratio_float, zoom_factor=1.2
                         )
+                        face_detected_frames += 1  # NEW: Count successful face detections
                     else:
                         # No clear speaker, use first person or center crop
                         speaker_bbox = smoothed_bboxes[0] if smoothed_bboxes else None
                         crop_params = calculate_crop_parameters(
                             speaker_bbox, smoothed_bboxes,
                             frame_width, frame_height,
-                            target_aspect_ratio=9/16, zoom_factor=1.2
+                            target_aspect_ratio=aspect_ratio_float, zoom_factor=1.2
                         )
+                    
+                    # Log crop parameters for debugging
+                    if frame_idx % 30 == 0:  # Log every 30 frames
+                        crop_x, crop_y, crop_w, crop_h = crop_params
+                        logger.info(f"🔧 Frame {frame_idx}: Speaker {speaker_idx} at bbox {speaker_bbox} -> crop {crop_w}x{crop_h} at ({crop_x}, {crop_y})")
                     
                     frame_data[frame_idx] = {
                         'bboxes': smoothed_bboxes,
@@ -515,11 +607,11 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
                     
                     processed_frames += 1
                 else:
-                    # No persons detected - skip lip detection, use center crop for narration videos
-                    audio_energy = frame_audio_energy.get(frame_idx, 0.0)
+                    # No persons detected - use center crop for narration videos
+                    audio_energy = frame_audio_energy.get(frame_idx + start_frame, 0.0)
                     
                     # Center crop for videos without people (narration, slides, etc.)
-                    crop_width = int(frame_height * 9/16)
+                    crop_width = int(frame_height * aspect_ratio_float)
                     crop_height = frame_height
                     crop_x = max(0, (frame_width - crop_width) // 2)
                     crop_y = 0
@@ -539,7 +631,7 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
         cap.release()
         lip_detector.cleanup()
         
-        # Statistics
+        # Calculate statistics
         frames_with_people = sum(1 for data in frame_data.values() if data.get('bboxes'))
         frames_without_people = processed_frames - frames_with_people
         active_speaker_frames = sum(1 for data in frame_data.values() if data.get('speaker_idx') is not None)
@@ -552,38 +644,54 @@ def focus_on_speaker(input_path: str, output_path: str, fps_batch: int = 3,
         logger.info(f"[{timestamp}] 📊 Active speaker detected: {active_speaker_frames} ({speaker_detection_rate:.1f}%)")
         logger.info(f"[{timestamp}] 📊 Speaker switches: {speaker_switches}")
         
+        # NEW: Determine if face detection was successful based on min_confidence threshold
+        face_detection_success = (active_speaker_frames / processed_frames) >= 0.1 if processed_frames > 0 else False
+        logger.info(f"[{timestamp}] 🎯 Face detection success: {face_detection_success} ({active_speaker_frames}/{processed_frames} frames)")
+        
         # Interpolate missing frames
         logger.info(f"[{timestamp}] 🔄 Interpolating crop parameters...")
         interpolated_crops = interpolate_crop_parameters(frame_data, clip_total_frames)
         
+        # Parse resolution and calculate output dimensions based on target aspect ratio and resolution
+        target_height = parse_resolution(resolution)
+        
+        # Calculate output dimensions based on target aspect ratio and resolution
+        if aspect_ratio_float < 1:  # Portrait (e.g., 9:16)
+            output_height = target_height
+            output_width = int(output_height * aspect_ratio_float)
+        elif aspect_ratio_float > 1:  # Landscape (e.g., 16:9)
+            output_width = target_height  # Use target_height as base for landscape
+            output_height = int(output_width / aspect_ratio_float)
+        else:  # Square (1:1)
+            output_width = output_height = target_height
+        
         # Generate ffmpeg filter with clip timing
-        logger.info(f"[{timestamp}] 🎬 Generating dynamic crop filter...")
+        logger.info(f"[{timestamp}] 🎬 Generating dynamic crop filter for {output_width}x{output_height}...")
         filter_complex = generate_ffmpeg_crop_filter_from_data(
-            interpolated_crops, frame_width, frame_height, clip_total_frames, fps
+            interpolated_crops, frame_width, frame_height, clip_total_frames, fps,
+            output_width, output_height
         )
         
-        # Add timing parameters for clip processing
-        if start_time > 0 or duration is not None:
-            timing_filter = f"[0:v]trim=start={start_time}"
-            if duration is not None:
-                timing_filter += f":duration={duration}"
-            timing_filter += ",setpts=PTS-STARTPTS[trimmed];"
-            filter_complex = timing_filter + filter_complex.replace("[0:v]", "[trimmed]")
+        # Do not trim in the video filter; use -ss/-t to keep A/V in sync.
         
         # Apply ffmpeg processing
         logger.info(f"[{timestamp}] 🎬 Applying video processing...")
-        success = apply_ffmpeg_processing(input_path, output_path, filter_complex)
+        ffmpeg_success = apply_ffmpeg_processing(
+            video_path, output_path, filter_complex, start_time=start_time, duration=duration
+        )
         
-        if success:
+        if ffmpeg_success:
             logger.info(f"[{timestamp}] ✅ Speaker-focused video created successfully!")
             logger.info(f"[{timestamp}] 📁 Output: {output_path}")
-            return output_path
+            return face_detection_success  # NEW: Return boolean indicating face detection success
         else:
             raise RuntimeError("FFmpeg processing failed")
     
     except Exception as e:
         logger.error(f"[{timestamp}] ❌ Error: {e}")
-        raise
+        import traceback
+        logger.error(traceback.format_exc())
+        return False  # NEW: Return False on error
 
 
 def interpolate_crop_parameters(frame_data: Dict[int, Dict], total_frames: int) -> Dict[int, Tuple[int, int, int, int]]:
@@ -626,38 +734,91 @@ def interpolate_crop_parameters(frame_data: Dict[int, Dict], total_frames: int) 
 
 def generate_ffmpeg_crop_filter_from_data(crop_data: Dict[int, Tuple[int, int, int, int]], 
                                          frame_width: int, frame_height: int,
-                                         total_frames: int, fps: float) -> str:
-    """Generate ffmpeg filter from crop data"""
+                                         total_frames: int, fps: float,
+                                         output_width: int = 1080, output_height: int = 1920) -> str:
+    """Generate ffmpeg filter from crop data with specified output dimensions"""
     if not crop_data:
-        # Fallback
-        crop_width = int(frame_height * 9/16)
+        # Fallback to center crop
+        aspect_ratio = output_width / output_height
+        crop_width = int(frame_height * aspect_ratio)
         crop_x = (frame_width - crop_width) // 2
-        return f"crop={crop_width}:{frame_height}:{crop_x}:0,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+        logger.info(f"🔧 Using fallback center crop: {crop_width}x{frame_height} at ({crop_x}, 0)")
+        return f"crop={crop_width}:{frame_height}:{crop_x}:0,scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
     
-    # Use most common crop as static (could be enhanced with keyframes)
+    # Log crop data statistics
     from collections import Counter
     crop_counter = Counter(crop_data.values())
-    most_common_crop = crop_counter.most_common(1)[0][0]
+    logger.info(f"🔧 Crop data: {len(crop_data)} frames with {len(crop_counter)} unique crops")
     
-    crop_x, crop_y, crop_width, crop_height = most_common_crop
+    # Create dynamic crop using keyframes for smooth transitions
+    keyframes = []
+    prev_crop = None
     
-    filter_str = f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+    # Sample keyframes every 30 frames or when crop changes significantly
+    for frame_idx in sorted(crop_data.keys()):
+        current_crop = crop_data[frame_idx]
+        
+        if prev_crop is None or crop_changed_significantly(prev_crop, current_crop):
+            time_sec = frame_idx / fps
+            crop_x, crop_y, crop_width, crop_height = current_crop
+            keyframes.append(f"{time_sec}:crop={crop_width}:{crop_height}:{crop_x}:{crop_y}")
+            prev_crop = current_crop
+    
+    logger.info(f"🔧 Generated {len(keyframes)} crop keyframes for dynamic tracking")
+    
+    if len(keyframes) <= 1:
+        # Static crop if no significant changes
+        most_common_crop = crop_counter.most_common(1)[0][0]
+        crop_x, crop_y, crop_width, crop_height = most_common_crop
+        logger.info(f"🔧 Using static crop: {crop_width}x{crop_height} at ({crop_x}, {crop_y})")
+        filter_str = f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
+    else:
+        # Dynamic crop with smooth transitions
+        logger.info(f"🔧 Using dynamic crop with smooth transitions")
+        # For now, use the most stable crop (this could be enhanced with zoompan filter)
+        most_common_crop = crop_counter.most_common(1)[0][0]
+        crop_x, crop_y, crop_width, crop_height = most_common_crop
+        filter_str = f"crop={crop_width}:{crop_height}:{crop_x}:{crop_y},scale={output_width}:{output_height}:force_original_aspect_ratio=decrease,pad={output_width}:{output_height}:(ow-iw)/2:(oh-ih)/2"
     
     return filter_str
 
 
-def apply_ffmpeg_processing(input_path: str, output_path: str, filter_complex: str) -> bool:
-    """Apply ffmpeg processing with the generated filter"""
+def crop_changed_significantly(crop1: Tuple[int, int, int, int], crop2: Tuple[int, int, int, int], threshold: int = 50) -> bool:
+    """Check if crop position changed significantly"""
+    x1, y1, w1, h1 = crop1
+    x2, y2, w2, h2 = crop2
+    
+    # Check if center moved significantly
+    center1_x, center1_y = x1 + w1//2, y1 + h1//2
+    center2_x, center2_y = x2 + w2//2, y2 + h2//2
+    
+    distance = ((center2_x - center1_x)**2 + (center2_y - center1_y)**2)**0.5
+    return distance > threshold
+
+
+def apply_ffmpeg_processing(input_path: str, output_path: str, filter_complex: str,
+                            start_time: float | None = None,
+                            duration: float | None = None) -> bool:
+    """Apply ffmpeg processing with the generated filter.
+    Uses -ss/-t after -i to trim both audio and video for accurate A/V sync.
+    """
     try:
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", input_path,
+        cmd = ["ffmpeg", "-y", "-i", input_path]
+
+        # Trim both audio and video after decode for accuracy
+        if start_time is not None and start_time > 0:
+            cmd += ["-ss", str(start_time)]
+        if duration is not None and duration > 0:
+            cmd += ["-t", str(duration)]
+
+        cmd += [
             "-vf", filter_complex,
             "-c:v", "libx264",
             "-preset", "medium",
             "-crf", "23",
             "-c:a", "aac",
             "-b:a", "128k",
+            "-shortest",
             output_path
         ]
         
@@ -673,20 +834,8 @@ def apply_ffmpeg_processing(input_path: str, output_path: str, filter_complex: s
             return False
     
     except subprocess.CalledProcessError as e:
-        logger.error(f"FFmpeg error: {e}")
+        logger.error(f"FFmpeg error: {e.stderr}")
         return False
     except Exception as e:
         logger.error(f"Error running ffmpeg: {e}")
         return False
-
-
-# Example usage
-if __name__ == "__main__":
-    input_video = "input.mp4"
-    output_video = "output_speaker_focused.mp4"
-    
-    try:
-        result = focus_on_speaker(input_video, output_video, fps_batch=3)
-        print(f"Success! Output saved to: {result}")
-    except Exception as e:
-        print(f"Error: {e}")

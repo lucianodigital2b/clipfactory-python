@@ -97,7 +97,7 @@ def transcribe_video(video_path, method="faster-whisper", video_id=None, progres
             
             try:
                 # Upload transcription to R2
-                transcript_url = upload_to_r2(temp_transcript_path, video_id, file_type="transcription")
+                transcript_url = upload_to_r2(temp_transcript_path, video_id)
                 print(f"📤 Transcription uploaded to R2: {transcript_url}", flush=True)
                 
                 # Send webhook update with transcription URL
